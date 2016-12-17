@@ -20,10 +20,8 @@ class MuApiTransfer(db_transfer.TransferBase):
         self.client = mu_client
 
     def pull_db_all_user(self):
-        print("pull all users")
-        users = self.pull_db_users()
-        print(users)
-        return users
+        print("pull all users...")
+        return self.pull_db_users()
 
     def pull_db_users(self):
         users = self.client.get_users_res()
