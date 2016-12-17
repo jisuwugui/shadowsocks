@@ -42,5 +42,6 @@ class MuApiTransfer(db_transfer.TransferBase):
             uid = self.port_uid_table[id]
             log = self.client.gen_traffic_log(uid, transfer[0], transfer[1])
             logs.append(log)
+        print("logs ", logs)
         self.client.update_traffic(logs)
         return update_transfer
