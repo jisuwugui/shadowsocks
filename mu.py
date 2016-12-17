@@ -33,9 +33,14 @@ class MuApiTransfer(db_transfer.TransferBase):
         print('call update all user')
         print(dt_transfer)
         update_transfer = {}
+        logs = []
         for id in dt_transfer.keys():
             transfer = dt_transfer[id]
             if transfer[0] + transfer[1] < 1024:
                 continue
             update_transfer[id] = transfer
+            uid = self.port_uid_table[id]
+            log = self.client.gen_traffic_log(uid, transfer[0], transfer[1])
+            logs.append(log)
+        self.client.update_traffic(logs)
         return update_transfer
