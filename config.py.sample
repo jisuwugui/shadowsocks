@@ -1,0 +1,3 @@
+mu_uri = 'http://example.xyz/mu'
+node_id = '1'
+token = '123'
