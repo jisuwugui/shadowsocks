@@ -26,6 +26,8 @@ class MuApiTransfer(db_transfer.TransferBase):
 
     def pull_db_users(self):
         users = self.client.get_users_res()
+        if users is None:
+            return []
         for user in users:
             self.port_uid_table[user['port']] = user['id']
         return users
