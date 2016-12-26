@@ -1,6 +1,7 @@
 from musdk import client
 import db_transfer
 import config
+import logging
 
 
 class MuApiTransfer(db_transfer.TransferBase):
@@ -8,7 +9,7 @@ class MuApiTransfer(db_transfer.TransferBase):
 
     def __init__(self):
         super(MuApiTransfer, self).__init__()
-        self.pull_ok = False  # 记录是否已经拉出过数据
+        self.pull_ok = False
         self.port_uid_table = {}
         self.init_mu_client()
 
@@ -45,5 +46,6 @@ class MuApiTransfer(db_transfer.TransferBase):
         print("logs ", logs)
         ok = self.client.update_traffic(logs)
         if ok is False:
+            logging.error("update traffic failed...")
             return {}
         return update_transfer
