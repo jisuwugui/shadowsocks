@@ -1,2 +1,2 @@
-cymysql
-musdk
+cymysql==0.8.9
+musdk==0.0.7

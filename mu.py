@@ -1,7 +1,7 @@
-from musdk import client
 import db_transfer
 import config
 import logging
+from musdk.client import Client
 
 
 class MuApiTransfer(db_transfer.TransferBase):
@@ -17,7 +17,7 @@ class MuApiTransfer(db_transfer.TransferBase):
         mu_url = config.mu_uri
         mu_token = config.token
         node_id = config.node_id
-        mu_client = client.Client(mu_url, node_id, mu_token)
+        mu_client = Client(mu_url, node_id, mu_token)
         self.client = mu_client
 
     def pull_db_all_user(self):
