@@ -10,20 +10,29 @@ import sys
 import json
 import base64
 
+
 class MuJsonLoader(object):
 	def __init__(self):
 		self.json = None
 
 	def load(self, path):
-		with open(path, 'rb+') as f:
-			self.json = json.loads(f.read().decode('utf8'))
+		l = "[]"
+		try:
+			with open(path, 'rb+') as f:
+				l = f.read().decode('utf8')
+		except:
+			pass
+		self.json = json.loads(l)
 
 	def save(self, path):
 		if self.json:
 			output = json.dumps(self.json, sort_keys=True, indent=4, separators=(',', ': '))
-			with open(path, 'r+') as f:
-				f.write(output)
+			with open(path, 'a'):
+				pass
+			with open(path, 'rb+') as f:
+				f.write(output.encode('utf8'))
 				f.truncate()
+
 
 class MuMgr(object):
 	def __init__(self):
@@ -37,10 +46,9 @@ class MuMgr(object):
 		if self.server_addr == '127.0.0.1':
 			self.server_addr = self.getipaddr()
 
-	def getipaddr(self, ifname = 'eth0'):
+	def getipaddr(self, ifname='eth0'):
 		import socket
 		import struct
-		import fcntl
 		ret = '127.0.0.1'
 		try:
 			ret = socket.gethostbyname(socket.getfqdn(socket.gethostname()))
@@ -48,6 +56,7 @@ class MuMgr(object):
 			pass
 		if ret == '127.0.0.1':
 			try:
+				import fcntl
 				s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 				ret = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x8915, struct.pack('256s', ifname[:15]))[20:24])
 			except:
@@ -60,26 +69,30 @@ class MuMgr(object):
 		protocol = protocol.replace("_compatible", "")
 		obfs = obfs.replace("_compatible", "")
 		link = "%s:%s:%s:%s:%s:%s" % (self.server_addr, user['port'], protocol, user['method'], obfs, common.to_str(base64.urlsafe_b64encode(common.to_bytes(user['passwd']))).replace("=", ""))
-		return "ssr://" + ( encode and common.to_str(base64.urlsafe_b64encode(common.to_bytes(link))).replace("=", "") or link)
+		return "ssr://" + (encode and common.to_str(base64.urlsafe_b64encode(common.to_bytes(link))).replace("=", "") or link)
 
 	def userinfo(self, user):
 		ret = ""
+		key_list = ['user', 'port', 'method', 'passwd', 'protocol', 'protocol_param', 'obfs', 'obfs_param', 'transfer_enable', 'u', 'd']
 		for key in sorted(user):
-			if key in ['enable']:
+			if key not in key_list:
+				key_list.append(key)
+		for key in key_list:
+			if key in ['enable'] or key not in user:
 				continue
 			ret += '\n'
-			if key in ['transfer_enable', 'u', 'd'] :
+			if key in ['transfer_enable', 'u', 'd']:
 				val = user[key]
 				if val / 1024 < 4:
 					ret += "    %s : %s" % (key, val)
-				elif val / 1024**2 < 4:
+				elif val / 1024 ** 2 < 4:
 					val /= float(1024)
 					ret += "    %s : %s  K Bytes" % (key, val)
-				elif val / 1024**3 < 4:
-					val /= float(1024**2)
+				elif val / 1024 ** 3 < 4:
+					val /= float(1024 ** 2)
 					ret += "    %s : %s  M Bytes" % (key, val)
 				else:
-					val /= float(1024**3)
+					val /= float(1024 ** 3)
 					ret += "    %s : %s  G Bytes" % (key, val)
 			else:
 				ret += "    %s : %s" % (key, user[key])
@@ -91,8 +104,8 @@ class MuMgr(object):
 		return ''.join([random.choice('''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789~-_=+(){}[]^&%$@''') for i in range(8)])
 
 	def add(self, user):
-		up = {'enable': True, 'u': 0, 'd': 0, 'method': "aes-128-cfb",
-		'protocol': "auth_sha1_v4_compatible",
+		up = {'enable': 1, 'u': 0, 'd': 0, 'method': "aes-128-ctr",
+		'protocol': "auth_aes128_md5",
 		'obfs': "tls1.2_ticket_auth_compatible",
 		'transfer_enable': 1125899906842624}
 		up['passwd'] = self.rand_pass()
@@ -172,8 +185,9 @@ class MuMgr(object):
 			if match:
 				print("### user [%s] info %s" % (row['user'], self.userinfo(row)))
 
+
 def print_server_help():
-    print('''usage: python mujson_manage.py -a|-d|-e|-c|-l [OPTION]...
+	print('''usage: python mujson_manage.py -a|-d|-e|-c|-l [OPTION]...
 
 Actions:
   -a ADD                 add/edit a user
@@ -187,7 +201,7 @@ Options:
   -p PORT                server port
   -k PASSWORD            password
   -m METHOD              encryption method, default: aes-128-cfb
-  -O PROTOCOL            protocol plugin, default: auth_sha1_v2_compatible
+  -O PROTOCOL            protocol plugin, default: auth_sha1_v4
   -o OBFS                obfs plugin, default: tls1.2_ticket_auth_compatible
   -G PROTOCOL_PARAM      protocol plugin param
   -g OBFS_PARAM          obfs plugin param
@@ -197,6 +211,7 @@ Options:
 General options:
   -h, --help             show this help message and exit
 ''')
+
 
 def main():
 	shortopts = 'adeclu:p:k:O:o:G:g:m:t:f:h'
@@ -209,15 +224,17 @@ def main():
 			'+2': 'tls1.2_ticket_auth_compatible',
 			'2': 'tls1.2_ticket_auth'}
 	fast_set_protocol = {'0': 'origin',
-			'+1': 'verify_sha1_compatible',
-			'1': 'verify_sha1',
-			'+2': 'auth_sha1_compatible',
-			'2': 'auth_sha1',
-			'+3': 'auth_sha1_v2_compatible',
-			'3': 'auth_sha1_v2',
-			'+4': 'auth_sha1_v4_compatible',
-			'4': 'auth_sha1_v4',
-			'a1': 'auth_aes128'}
+			'+ota': 'verify_sha1_compatible',
+			'ota': 'verify_sha1',
+			'a1': 'auth_sha1',
+			'+a1': 'auth_sha1_compatible',
+			'a2': 'auth_sha1_v2',
+			'+a2': 'auth_sha1_v2_compatible',
+			'a4': 'auth_sha1_v4',
+			'+a4': 'auth_sha1_v4_compatible',
+			'am': 'auth_aes128_md5',
+			'as': 'auth_aes128_sha1',
+			}
 	fast_set_method = {'a0': 'aes-128-cfb',
 			'a1': 'aes-192-cfb',
 			'a2': 'aes-256-cfb',
@@ -279,7 +296,7 @@ def main():
 					val = int(value)
 				except:
 					pass
-				user['transfer_enable'] = val * (1024 ** 3)
+				user['transfer_enable'] = int(val * 1024) * (1024 ** 2)
 			elif key in ('-h', '--help'):
 				print_server_help()
 				sys.exit(0)
@@ -314,4 +331,3 @@ def main():
 
 if __name__ == '__main__':
 	main()
-

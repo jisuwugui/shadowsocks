@@ -27,6 +27,7 @@ import binascii
 import traceback
 import random
 import platform
+import threading
 
 from shadowsocks import encrypt, obfs, eventloop, shell, common, lru_cache
 from shadowsocks.common import pre_parse_header, parse_header
@@ -106,6 +107,7 @@ class TCPRelayHandler(object):
         self._dns_resolver = dns_resolver
         self._client_address = local_sock.getpeername()[:2]
         self._accept_address = local_sock.getsockname()[:2]
+        self._user = None
 
         # TCP Relay works as either sslocal or ssserver
         # if is_local, this is sslocal
@@ -123,6 +125,8 @@ class TCPRelayHandler(object):
         server_info = obfs.server_info(server.obfs_data)
         server_info.host = config['server']
         server_info.port = server._listen_port
+        #server_info.users = server.server_users
+        #server_info.update_user_func = self._update_user
         server_info.client = self._client_address[0]
         server_info.client_port = self._client_address[1]
         server_info.protocol_param = ''
@@ -139,6 +143,8 @@ class TCPRelayHandler(object):
         server_info = obfs.server_info(server.protocol_data)
         server_info.host = config['server']
         server_info.port = server._listen_port
+        server_info.users = server.server_users
+        server_info.update_user_func = self._update_user
         server_info.client = self._client_address[0]
         server_info.client_port = self._client_address[1]
         server_info.protocol_param = config['protocol_param']
@@ -151,7 +157,8 @@ class TCPRelayHandler(object):
         server_info.tcp_mss = 1460
         self._protocol.set_server_info(server_info)
 
-        self._redir_list = config.get('redirect', ["0.0.0.0:0"])
+        self._redir_list = config.get('redirect', ["*#0.0.0.0:0"])
+        self._is_redirect = False
         self._bind = config.get('out_bind', '')
         self._bindv6 = config.get('out_bindv6', '')
         self._ignore_bind_list = config.get('ignore_bind', [])
@@ -201,6 +208,9 @@ class TCPRelayHandler(object):
             server = random.choice(server)
         logging.debug('chosen server: %s:%d', server, server_port)
         return server, server_port
+
+    def _update_user(self, user):
+        self._user = user
 
     def _update_activity(self, data_len=0):
         # tell the TCP Relay we have activities recently
@@ -302,7 +312,7 @@ class TCPRelayHandler(object):
             try:
                 if self._encrypt_correct:
                     if sock == self._remote_sock:
-                        self._server.server_transfer_ul += len(data)
+                        self._server.add_transfer_u(self._user, len(data))
                         self._update_activity(len(data))
                 if data:
                     l = len(data)
@@ -347,43 +357,77 @@ class TCPRelayHandler(object):
         return True
 
     def _get_redirect_host(self, client_address, ogn_data):
-        host_list = self._redir_list or ["0.0.0.0:0"]
-        hash_code = binascii.crc32(ogn_data)
-        addrs = socket.getaddrinfo(client_address[0], client_address[1], 0, socket.SOCK_STREAM, socket.SOL_TCP)
-        af, socktype, proto, canonname, sa = addrs[0]
-        address_bytes = common.inet_pton(af, sa[0])
-        if af == socket.AF_INET6:
-            addr = struct.unpack('>Q', address_bytes[8:])[0]
-        elif af == socket.AF_INET:
-            addr = struct.unpack('>I', address_bytes)[0]
-        else:
-            addr = 0
+        host_list = self._redir_list or ["*#0.0.0.0:0"]
 
-        host_port = []
-        match_port = False
         if type(host_list) != list:
             host_list = [host_list]
-        for host in host_list:
-            items = common.to_str(host).rsplit(':', 1)
-            if len(items) > 1:
-                try:
-                    port = int(items[1])
-                    if port == self._server._listen_port:
-                        match_port = True
-                    host_port.append((items[0], port))
-                except:
-                    pass
+
+        items_sum = common.to_str(host_list[0]).rsplit('#', 1)
+        if len(items_sum) < 2:
+            hash_code = binascii.crc32(ogn_data)
+            addrs = socket.getaddrinfo(client_address[0], client_address[1], 0, socket.SOCK_STREAM, socket.SOL_TCP)
+            af, socktype, proto, canonname, sa = addrs[0]
+            address_bytes = common.inet_pton(af, sa[0])
+            if af == socket.AF_INET6:
+                addr = struct.unpack('>Q', address_bytes[8:])[0]
+            elif af == socket.AF_INET:
+                addr = struct.unpack('>I', address_bytes)[0]
             else:
-                host_port.append((host, 80))
+                addr = 0
 
-        if match_port:
-            last_host_port = host_port
             host_port = []
-            for host in last_host_port:
-                if host[1] == self._server._listen_port:
-                    host_port.append(host)
+            match_port = False
+            for host in host_list:
+                items = common.to_str(host).rsplit(':', 1)
+                if len(items) > 1:
+                    try:
+                        port = int(items[1])
+                        if port == self._server._listen_port:
+                            match_port = True
+                        host_port.append((items[0], port))
+                    except:
+                        pass
+                else:
+                    host_port.append((host, 80))
 
-        return host_port[((hash_code & 0xffffffff) + addr) % len(host_port)]
+            if match_port:
+                last_host_port = host_port
+                host_port = []
+                for host in last_host_port:
+                    if host[1] == self._server._listen_port:
+                        host_port.append(host)
+
+            return host_port[((hash_code & 0xffffffff) + addr) % len(host_port)]
+
+        else:
+            host_port = []
+            for host in host_list:
+                items_sum = common.to_str(host).rsplit('#', 1)
+                items_match = common.to_str(items_sum[0]).rsplit(':', 1)
+                items = common.to_str(items_sum[1]).rsplit(':', 1)
+                if len(items_match) > 1:
+                    if self._server._listen_port != int(items_match[1]):
+                        continue
+                match_port = 0
+                if len(items_match) > 1:
+                    if items_match[1] != "*":
+                        try:
+                            match_port = int(items_match[1])
+                        except:
+                            pass
+                if items_match[0] != "*" and common.match_regex(items_match[0], ogn_data) == False and \
+                not (match_port == self._server._listen_port or match_port == 0):
+                    continue
+                if len(items) > 1:
+                    try:
+                        port = int(items[1])
+                        return (items[0], port)
+                    except:
+                        pass
+                else:
+                    return (items[0], 80)
+
+            return ("0.0.0.0", 0)
 
     def _handel_protocol_error(self, client_address, ogn_data):
         logging.warn("Protocol ERROR, TCP ogn data %s from %s:%d via port %d" % (binascii.hexlify(ogn_data), client_address[0], client_address[1], self._server._listen_port))
@@ -393,6 +437,7 @@ class TCPRelayHandler(object):
         if port == 0:
             raise Exception('can not parse header')
         data = b"\x03" + common.to_bytes(common.chr(len(host))) + common.to_bytes(host) + struct.pack('>H', port)
+        self._is_redirect = True
         logging.warn("TCP data redir %s:%d %s" % (host, port, binascii.hexlify(data)))
         return data + ogn_data
 
@@ -562,7 +607,7 @@ class TCPRelayHandler(object):
         if len(addrs) == 0:
             raise Exception("getaddrinfo failed for %s:%d" % (ip, port))
         af, socktype, proto, canonname, sa = addrs[0]
-        if not self._remote_udp:
+        if not self._remote_udp and not self._is_redirect:
             if self._forbidden_iplist:
                 if common.to_str(sa[0]) in self._forbidden_iplist:
                     if self._remote_address:
@@ -803,7 +848,7 @@ class TCPRelayHandler(object):
                     data = self._encryptor.encrypt(data)
                     data = self._obfs.server_encode(data)
             self._update_activity(len(data))
-            self._server.server_transfer_dl += len(data)
+            self._server.add_transfer_d(self._user, len(data))
         else:
             return
         try:
@@ -855,6 +900,9 @@ class TCPRelayHandler(object):
         # handle all events in this handler and dispatch them to methods
         if self._stage == STAGE_DESTROYED:
             logging.debug('ignore handle_event: destroyed')
+            return
+        if self._user is not None and self._user not in self._server.server_users:
+            self.destroy()
             return
         # order is important
         if sock == self._remote_sock or sock == self._remote_sock_v6:
@@ -953,6 +1001,11 @@ class TCPRelay(object):
         self._fd_to_handlers = {}
         self.server_transfer_ul = 0
         self.server_transfer_dl = 0
+        self.server_users = {}
+        self.server_user_transfer_ul = {}
+        self.server_user_transfer_dl = {}
+        self.update_users_protocol_param = None
+        self.update_users_acl = None
         self.server_connections = 0
         self.protocol_data = obfs.obfs(config['protocol']).init_data()
         self.obfs_data = obfs.obfs(config['obfs']).init_data()
@@ -971,6 +1024,9 @@ class TCPRelay(object):
             listen_addr = config['server']
             listen_port = config['server_port']
         self._listen_port = listen_port
+
+        if common.to_bytes(config['protocol']) in [b"auth_aes128_md5", b"auth_aes128_sha1"]:
+            self._update_users(None, None)
 
         addrs = socket.getaddrinfo(listen_addr, listen_port, 0,
                                    socket.SOCK_STREAM, socket.SOL_TCP)
@@ -1010,6 +1066,59 @@ class TCPRelay(object):
     def add_connection(self, val):
         self.server_connections += val
         logging.debug('server port %5d connections = %d' % (self._listen_port, self.server_connections,))
+
+    def get_ud(self):
+        return (self.server_transfer_ul, self.server_transfer_dl)
+
+    def get_users_ud(self):
+        return (self.server_user_transfer_ul.copy(), self.server_user_transfer_dl.copy())
+
+    def _update_users(self, protocol_param, acl):
+        if protocol_param is None:
+            protocol_param = self._config['protocol_param']
+        param = common.to_bytes(protocol_param).split(b'#')
+        if len(param) == 2:
+            user_list = param[1].split(b',')
+            if user_list:
+                for user in user_list:
+                    items = user.split(b':')
+                    if len(items) == 2:
+                        user_int_id = int(items[0])
+                        uid = struct.pack('<I', user_int_id)
+                        if acl is not None and user_int_id not in acl:
+                            self.del_user(uid)
+                        else:
+                            passwd = items[1]
+                            self.add_user(uid, passwd)
+
+    def update_users(self, protocol_param, acl):
+        self.update_users_protocol_param = protocol_param
+        self.update_users_acl = acl
+
+    def add_user(self, user, passwd): # user: binstr[4], passwd: str
+        self.server_users[user] = common.to_bytes(passwd)
+
+    def del_user(self, user):
+        if user in self.server_users:
+            del self.server_users[user]
+
+    def add_transfer_u(self, user, transfer):
+        if user is None:
+            self.server_transfer_ul += transfer
+        else:
+            if user not in self.server_user_transfer_ul:
+                self.server_user_transfer_ul[user] = 0
+            self.server_user_transfer_ul[user] += transfer + self.server_transfer_ul
+            self.server_transfer_ul = 0
+
+    def add_transfer_d(self, user, transfer):
+        if user is None:
+            self.server_transfer_dl += transfer
+        else:
+            if user not in self.server_user_transfer_dl:
+                self.server_user_transfer_dl[user] = 0
+            self.server_user_transfer_dl[user] += transfer + self.server_transfer_dl
+            self.server_transfer_dl = 0
 
     def update_stat(self, port, stat_dict, val):
         newval = stat_dict.get(0, 0) + val
@@ -1107,6 +1216,10 @@ class TCPRelay(object):
                 logging.info('closed TCP port %d', self._listen_port)
             for handler in list(self._fd_to_handlers.values()):
                 handler.destroy()
+        elif self.update_users_protocol_param is not None or self.update_users_acl is not None:
+            self._update_users(self.update_users_protocol_param, self.update_users_acl)
+            self.update_users_protocol_param = None
+            self.update_users_acl = None
         self._sweep_timeout()
 
     def close(self, next_tick=False):
